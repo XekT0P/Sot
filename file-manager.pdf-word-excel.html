@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="bg">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>HTML Файлов Мениджър</title>
+  <style>
+    body{font-family:Arial, sans-serif;background:#0f1724;color:#e6eef6;margin:0;padding:20px;}
+    .app{max-width:1000px;margin:0 auto;background:#0b1220;padding:15px;border-radius:10px;}
+    h1{margin-top:0}
+    .controls{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:15px;}
+    button{padding:8px 14px;border:none;border-radius:6px;cursor:pointer;}
+    button.primary{background:#38bdf8;color:#000;}
+    button.secondary{background:#1e293b;color:#fff;}
+    .main{display:grid;grid-template-columns:300px 1fr;gap:15px;}
+    .list{background:#111827;padding:10px;border-radius:6px;overflow:auto;max-height:500px;}
+    .entry{padding:6px;border-radius:4px;cursor:pointer;}
+    .entry:hover{background:#1f2937;}
+    .editor{background:#111827;padding:10px;border-radius:6px;min-height:500px;display:flex;flex-direction:column;}
+    textarea{flex:1;width:100%;border:none;background:#0f1724;color:#e6eef6;padding:10px;border-radius:6px;font-family:monospace;resize:none;}
+  </style>
+</head>
+<body>
+  <div class="app">
+    <h1>Файлов Мениджър (PDF, Word, Excel)</h1>
+    <div class="controls">
+      <button id="openFolder" class="primary">Отвори папка</button>
+      <label><input id="uploader" type="file" multiple accept=".pdf,.doc,.docx,.xls,.xlsx" style="display:none"/><button class="secondary">Качи файл</button></label>
+    </div>
+    <div class="main">
+      <div class="list" id="fileList">Няма файлове</div>
+      <div class="editor">
+        <h3 id="fileName">Нищо не е избрано</h3>
+        <textarea id="editorArea" placeholder="Тук ще се покаже съдържанието на избрания файл..."></textarea>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const allowedExt = [".pdf",".doc",".docx",".xls",".xlsx"];
+    const openFolderBtn = document.getElementById("openFolder");
+    const fileList = document.getElementById("fileList");
+    const editorArea = document.getElementById("editorArea");
+    const fileNameEl = document.getElementById("fileName");
+    const uploader = document.getElementById("uploader");
+
+    let currentDirHandle = null;
+
+    function isAllowed(name){
+      return allowedExt.some(ext => name.toLowerCase().endsWith(ext));
+    }
+
+    async function openFolder(){
+      try {
+        currentDirHandle = await window.showDirectoryPicker();
+        await loadFileList();
+      } catch(e){ console.error(e); }
+    }
+
+    async function loadFileList(){
+      fileList.innerHTML = "";
+      for await (const [name, handle] of currentDirHandle.entries()){
+        if(handle.kind === "file" && isAllowed(name)){
+          const div = document.createElement("div");
+          div.textContent = name;
+          div.className = "entry";
+          div.onclick = () => openFile(handle,name);
+          fileList.appendChild(div);
+        }
+      }
+      if(fileList.innerHTML === "") fileList.textContent = "Няма позволени файлове";
+    }
+
+    async function openFile(handle,name){
+      fileNameEl.textContent = name;
+      if(!isAllowed(name)){
+        editorArea.value = "Този файл не е позволен.";
+        return;
+      }
+      const file = await handle.getFile();
+      if(name.endsWith(".pdf") || name.endsWith(".doc") || name.endsWith(".docx") || name.endsWith(".xls") || name.endsWith(".xlsx")){
+        const url = URL.createObjectURL(file);
+        window.open(url,"_blank");
+        editorArea.value = "Файлът е отворен в нов таб.";
+      }
+    }
+
+    uploader.addEventListener("change", async (e)=>{
+      const files = e.target.files;
+      for(const file of files){
+        if(!isAllowed(file.name)){ alert("Непозволен файл: "+file.name); continue; }
+        // тук можем да качим към текущата папка, ако имаме write permission
+        alert("Избран е файл за качване: "+file.name);
+      }
+    });
+
+    openFolderBtn.addEventListener("click", openFolder);
+  </script>
+</body>
+</html>
