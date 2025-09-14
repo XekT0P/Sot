@@ -1,2 +1,2 @@
-# Sot.github.io
+# Sot
 Telepol github archvie
