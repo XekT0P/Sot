@@ -1,2 +1,0 @@
-# Sot
-Telepol github archvie
