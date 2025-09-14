@@ -1,0 +1,327 @@
+<!-- HTML File Manager
+A single-file, client-side file manager.
+Features:
+- Uses File System Access API when available (open folder, read/write files)
+- Fallback: in-memory virtual file storage with upload/download
+- Create, rename, delete, edit, download files
+- Create folders (when FS API available) or simulate folders in-memory
+
+Save this as file-manager.html and open in a Chromium-based browser for full functionality.
+-->
+<!doctype html>
+<html lang="bg">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>HTML Файлов Мениджър</title>
+  <style>
+    :root{--bg:#0f1724;--card:#0b1220;--muted:#94a3b8;--accent:#38bdf8;--glass:rgba(255,255,255,0.03)}
+    html,body{height:100%;margin:0;font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial}
+    body{background:linear-gradient(180deg,#071028 0%,#071827 60%);color:#e6eef6;padding:18px;}
+    .app{max-width:1100px;margin:0 auto;background:var(--card);border-radius:12px;padding:18px;box-shadow:0 10px 30px rgba(2,6,23,0.6)}
+    header{display:flex;gap:12px;align-items:center;justify-content:space-between}
+    h1{font-size:18px;margin:0}
+    .controls{display:flex;gap:8px;flex-wrap:wrap}
+    button{background:var(--glass);border:1px solid rgba(255,255,255,0.04);color:inherit;padding:8px 12px;border-radius:8px;cursor:pointer}
+    button.primary{background:linear-gradient(90deg,var(--accent),#60a5fa);color:#022433;border:none}
+    .main{display:grid;grid-template-columns:320px 1fr;gap:12px;margin-top:12px}
+    .sidebar{background:linear-gradient(180deg,rgba(255,255,255,0.02),transparent);padding:12px;border-radius:8px}
+    .list{height:540px;overflow:auto;margin-top:8px}
+    .entry{display:flex;align-items:center;justify-content:space-between;padding:8px;border-radius:6px;margin-bottom:6px}
+    .entry:hover{background:rgba(255,255,255,0.01)}
+    .meta{font-size:12px;color:var(--muted)}
+    .editor{background:#021425;border-radius:8px;padding:12px;height:540px;display:flex;flex-direction:column}
+    textarea{flex:1;background:transparent;border:1px dashed rgba(255,255,255,0.04);color:inherit;padding:12px;border-radius:8px;font-family:monospace;font-size:13px;resize:none}
+    .toolbar{display:flex;gap:8px;margin-bottom:8px;align-items:center}
+    .path{font-size:13px;color:var(--muted)}
+    input[type=file]{display:none}
+    .small{padding:6px 8px;font-size:13px}
+    .hint{font-size:13px;color:var(--muted);margin-top:10px}
+    .footer{margin-top:10px;font-size:13px;color:var(--muted)}
+    .file-name{font-weight:600}
+    .btn-ghost{background:transparent;border:1px solid rgba(255,255,255,0.03)}
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <div>
+        <h1>HTML Файлов Мениджър</h1>
+        <div class="path" id="cwd">Не е отворена папка</div>
+      </div>
+      <div class="controls">
+        <button id="openFolder" class="primary">Отвори папка</button>
+        <button id="createFile">Нов файл</button>
+        <button id="createFolder">Нова папка</button>
+        <label title="Качи файлове"><input id="uploader" type="file" multiple /> <button class="btn-ghost small">Качи</button></label>
+        <button id="exportZip">Експорт ZIP</button>
+      </div>
+    </header>
+
+    <div class="main">
+      <aside class="sidebar">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <strong>Съдържание</strong>
+          <div class="meta" id="fsStatus">API: неизвестно</div>
+        </div>
+        <div class="list" id="fileList">Празно</div>
+        <div class="hint">Съвет: За пълна функционалност използвайте Chromium-базиран браузър (Chrome, Edge, Opera) и натиснете "Отвори папка".</div>
+      </aside>
+
+      <section class="editor">
+        <div class="toolbar">
+          <div style="flex:1"><strong id="selectedName">Нищо избрано</strong><div class="meta" id="selectedMeta"></div></div>
+          <button id="downloadFile">Изтегли</button>
+          <button id="saveFile" class="primary">Запази</button>
+          <button id="deleteFile" class="small">Изтрий</button>
+        </div>
+        <textarea id="editorArea" placeholder="Изберете или създайте файл..." spellcheck="false"></textarea>
+        <div class="footer">Поддръжка: File System Access API (best), fallback: временно локално в памет и изтегляне като файл.</div>
+      </section>
+    </div>
+  </div>
+
+  <script>
+    // Simple HTML file manager: File System Access API with fallback to in-memory
+    const openFolderBtn = document.getElementById('openFolder');
+    const createFileBtn = document.getElementById('createFile');
+    const createFolderBtn = document.getElementById('createFolder');
+    const fileListEl = document.getElementById('fileList');
+    const cwdEl = document.getElementById('cwd');
+    const fsStatus = document.getElementById('fsStatus');
+
+    const uploader = document.getElementById('uploader');
+    const editor = document.getElementById('editorArea');
+    const selectedNameEl = document.getElementById('selectedName');
+    const selectedMeta = document.getElementById('selectedMeta');
+
+    const downloadBtn = document.getElementById('downloadFile');
+    const saveBtn = document.getElementById('saveFile');
+    const deleteBtn = document.getElementById('deleteFile');
+    const exportZipBtn = document.getElementById('exportZip');
+
+    let dirHandle = null; // for FS API
+    let currentFileHandle = null;
+
+    // In-memory fallback storage: structure: { path: {type:'file'|'dir', content:Blob|string, children:{}} }
+    const VFS = { '/': {type:'dir', children:{}} };
+    let vfsCwd = '/';
+
+    function supportsFS() {
+      return 'showDirectoryPicker' in window;
+    }
+
+    function setStatus() {
+      fsStatus.textContent = supportsFS() ? 'API: File System Access (available)' : 'API: File System Access (не е наличен) - използва се fallback';
+    }
+
+    setStatus();
+
+    function renderList() {
+      fileListEl.innerHTML = '';
+      if (dirHandle) {
+        // show entries from dirHandle
+        (async ()=>{
+          for await (const [name, handle] of dirHandle.entries()){
+            const el = document.createElement('div'); el.className='entry';
+            el.innerHTML = `<div><div class="file-name">${name}</div><div class="meta">${handle.kind}</div></div><div><button data-name="${name}" class="small">Отвори</button></div>`;
+            fileListEl.appendChild(el);
+            el.querySelector('button').onclick = ()=>openFromHandle(handle);
+          }
+        })();
+      } else {
+        // render VFS
+        const listing = VFS[vfsCwd].children;
+        const names = Object.keys(listing).sort((a,b)=>{ // dirs first
+          const A = listing[a]; const B = listing[b];
+          if (A.type===B.type) return a.localeCompare(b);
+          return A.type==='dir' ? -1:1;
+        });
+        if (!names.length) {fileListEl.textContent='(празно)'; return}
+        for (const name of names){
+          const item = listing[name];
+          const el = document.createElement('div'); el.className='entry';
+          el.innerHTML = `<div><div class="file-name">${name}</div><div class="meta">${item.type}</div></div><div><button data-name="${name}" class="small">Отвори</button></div>`;
+          fileListEl.appendChild(el);
+          el.querySelector('button').onclick = ()=>{
+            if (item.type==='dir') { vfsCwd = (vfsCwd+'').replace(/\/g,'/') + (vfsCwd.endsWith('/')? '': '/') + name; // naive
+              // navigate into
+              // ensure path exists as key
+              if (!VFS[vfsCwd]) VFS[vfsCwd] = {type:'dir', children:{}};
+              cwdEl.textContent = vfsCwd;
+              renderList();
+            } else openFromVFS(name);
+          }
+        }
+      }
+    }
+
+    async function openFromHandle(handle){
+      if (handle.kind === 'file'){
+        currentFileHandle = handle;
+        const file = await handle.getFile();
+        const text = await file.text();
+        editor.value = text;
+        selectedNameEl.textContent = handle.name || 'Файл';
+        selectedMeta.textContent = `${file.size} bytes • ${file.type || 'text'}`;
+      } else if (handle.kind === 'directory'){
+        dirHandle = handle;
+        cwdEl.textContent = handle.name || 'Папка';
+        currentFileHandle = null;
+        editor.value = '';
+        selectedNameEl.textContent = 'Нищо избрано';
+        selectedMeta.textContent = '';
+        renderList();
+      }
+    }
+
+    function openFromVFS(name){
+      const entry = VFS[vfsCwd].children[name];
+      currentFileHandle = { _vfsPath: (vfsCwd + (vfsCwd.endsWith('/')?'':'/') + name) };
+      if (typeof entry.content === 'string') editor.value = entry.content;
+      else if (entry.content instanceof Blob) {
+        const reader = new FileReader(); reader.onload = ()=> editor.value = reader.result; reader.readAsText(entry.content);
+      } else editor.value = '';
+      selectedNameEl.textContent = name;
+      selectedMeta.textContent = entry.content ? (entry.content.size ? entry.content.size+' bytes' : String(entry.content).length+' chars') : '';
+    }
+
+    openFolderBtn.onclick = async ()=>{
+      if (!supportsFS()) { alert('File System Access API не е наличен в този браузър. Можете да използвате бутон "Качи" за да работите с файлове.'); return }
+      try{
+        dirHandle = await window.showDirectoryPicker();
+        cwdEl.textContent = dirHandle.name;
+        renderList();
+      }catch(e){console.warn(e)}
+    }
+
+    createFileBtn.onclick = async ()=>{
+      const name = prompt('Име на новия файл (напр. notes.txt):'); if (!name) return;
+      if (dirHandle){
+        const handle = await dirHandle.getFileHandle(name,{create:true});
+        const writable = await handle.createWritable(); await writable.write(''); await writable.close();
+        renderList();
+      } else {
+        // create in VFS
+        VFS[vfsCwd].children[name] = {type:'file', content:''};
+        renderList();
+      }
+    }
+
+    createFolderBtn.onclick = async ()=>{
+      const name = prompt('Име на новата папка:'); if (!name) return;
+      if (dirHandle){
+        await dirHandle.getDirectoryHandle(name,{create:true});
+        renderList();
+      } else {
+        // create as nested path
+        const newPath = (vfsCwd + (vfsCwd.endsWith('/')?'':'/') + name);
+        VFS[newPath] = {type:'dir', children:{}};
+        VFS[vfsCwd].children[name] = {type:'dir'};
+        renderList();
+      }
+    }
+
+    uploader.onchange = async (e)=>{
+      const files = Array.from(e.target.files);
+      if (dirHandle){
+        for (const f of files){
+          const fh = await dirHandle.getFileHandle(f.name,{create:true});
+          const writable = await fh.createWritable(); await writable.write(await f.arrayBuffer()); await writable.close();
+        }
+        renderList();
+      } else {
+        for (const f of files){
+          VFS[vfsCwd].children[f.name] = {type:'file', content: f.slice()};
+        }
+        renderList();
+      }
+      uploader.value = '';
+    }
+
+    saveBtn.onclick = async ()=>{
+      if (currentFileHandle && currentFileHandle._vfsPath){
+        // VFS save
+        const path = currentFileHandle._vfsPath;
+        const name = path.split('/').pop();
+        const parent = path.replace('/'+name,'') || '/';
+        VFS[parent].children[name].content = editor.value;
+        selectedMeta.textContent = 'Запазено (в паметта)';
+        alert('Файлът е запазен в локалната сесия (fallback). Можете да изтеглите файла с "Изтегли".');
+      } else if (currentFileHandle){
+        // FS API save
+        try{
+          const writable = await currentFileHandle.createWritable();
+          await writable.write(editor.value);
+          await writable.close();
+          selectedMeta.textContent = 'Запазено на диск';
+          alert('Запазено успешно.');
+          renderList();
+        }catch(e){console.error(e); alert('Грешка при запис: '+e.message)}
+      } else {
+        alert('Няма избран файл. Създайте или отворете файл първо.');
+      }
+    }
+
+    downloadBtn.onclick = async ()=>{
+      if (currentFileHandle && currentFileHandle._vfsPath){
+        const path = currentFileHandle._vfsPath; const name = path.split('/').pop();
+        const entry = VFS[path.replace('/'+name,'') || '/'].children[name] || VFS[vfsCwd].children[name];
+        let blob;
+        if (typeof entry.content === 'string') blob = new Blob([entry.content],{type:'text/plain'});
+        else blob = entry.content;
+        const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href=url; a.download = name; a.click(); URL.revokeObjectURL(url);
+      } else if (currentFileHandle){
+        const file = await currentFileHandle.getFile();
+        const url = URL.createObjectURL(file); const a = document.createElement('a'); a.href=url; a.download = currentFileHandle.name; a.click(); URL.revokeObjectURL(url);
+      } else alert('Няма избран файл');
+    }
+
+    deleteBtn.onclick = async ()=>{
+      if (currentFileHandle && currentFileHandle._vfsPath){
+        const path = currentFileHandle._vfsPath; const name = path.split('/').pop(); const parent = path.replace('/'+name,'') || '/';
+        delete VFS[parent].children[name]; currentFileHandle = null; editor.value=''; selectedNameEl.textContent='Нищо избрано'; renderList();
+      } else if (currentFileHandle){
+        if (!dirHandle) return alert('Невъзможно: няма отворена папка');
+        try{ await dirHandle.removeEntry(currentFileHandle.name); currentFileHandle=null; editor.value=''; selectedNameEl.textContent='Нищо избрано'; renderList(); }
+        catch(e){ alert('Грешка при изтриване: '+e.message)}
+      } else alert('Няма избран файл');
+    }
+
+    // Open file by name in VFS context from fileList click
+    function ensureVFSPathExists(path){ if (!VFS[path]) VFS[path] = {type:'dir', children:{}} }
+    ensureVFSPathExists('/');
+
+    // initial example file
+    VFS['/'].children['hello.txt'] = {type:'file', content:'Здравей! Това е примерен файл. Можете да го промените.'};
+    VFS['/'].children['notes.md'] = {type:'file', content:'# Бележки\n- точка 1\n- точка 2'};
+    renderList(); cwdEl.textContent = vfsCwd;
+
+    // Export selected folder as ZIP (fallback simple ZIP generation using JSZip would be nice but we cannot import libs)
+    // Instead create simple multiple downloads or a single concatenated file.
+    exportZipBtn.onclick = async ()=>{
+      if (dirHandle && supportsFS()){
+        // try to create a zip by reading files (simple fallback: download files one by one as separate)
+        if (!confirm('Експорт на папка: браузърът ще изтегли файловете поединично. Ако искате ZIP — използвайте външен инструмент или идия с библиотека JSZip. Продължаваме?')) return;
+        for await (const [name, handle] of dirHandle.entries()){
+          if (handle.kind==='file'){ const file = await handle.getFile(); const url = URL.createObjectURL(file); const a = document.createElement('a'); a.href=url; a.download = name; a.click(); URL.revokeObjectURL(url); }
+        }
+        return;
+      }
+      // VFS: download each file in current vfsCwd
+      const listing = VFS[vfsCwd].children; for (const name in listing){ if (listing[name].type==='file'){ let blob = typeof listing[name].content==='string' ? new Blob([listing[name].content],{type:'text/plain'}) : listing[name].content; const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href=url; a.download = name; a.click(); URL.revokeObjectURL(url); }}
+    }
+
+    // Helper: prompt to rename (not implemented fully) and other niceties could be added.
+
+    // UX: click file entries to select
+    fileListEl.addEventListener('click', (e)=>{
+      const btn = e.target.closest('button'); if (!btn) return; // handled above
+    });
+
+    // Keyboard shortcut: Ctrl+S to save
+    window.addEventListener('keydown', (e)=>{ if ((e.ctrlKey||e.metaKey) && e.key.toLowerCase() === 's'){ e.preventDefault(); saveBtn.click(); } });
+
+  </script>
+</body>
+</html>
